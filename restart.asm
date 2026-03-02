@@ -2,7 +2,6 @@ bits 64
 default rel
 
 BLOCK_SIZE equ 1024
-BLOCK_MASK equ BLOCK_SIZE - 1
 
 O_RDONLY  equ 0
 
@@ -17,71 +16,87 @@ SYS_FORK  equ 57
 SYS_EXECV equ 59
 SYS_EXIT  equ 60
 SYS_KILL  equ 62
+SYS_DENTS equ 78
 SYS_CHDIR equ 80
 SYS_RLINK equ 89
 SYS_GUID  equ 102
 SYS_SUID  equ 105
 SYS_SSID  equ 112
-
 section .text
 
-atoi:
-	mov rdi, 0
 
-_a0:
-	cmp byte [rax], 0
-	je _a1
+strmov:
+.a0:
+	mov al, [rsi]
+	mov [rdi], al
+	cmp al, 0
+	je .b0
 
-	mul rdi, 10
-	movzx rsi, byte [rax]
-	sub rsi, '0'
-	add rdi, rsi
-	inc rax
+	inc rdi
+	inc rsi
 
-	jmp _a0
-_a1:
+	jmp .a0
+
+.b0:
+	ret
+
+
+strend:
+	jmp .c0
+.a0:
+	inc rdi
+.c0:
+	cmp byte [rdi], 0
+	jne .a0
 	mov rax, rdi
 	ret
 
-stat_file:
-	mov rdi, rax
-	mov rax, SYS_STAT
-	mov rsi, statbuf
-	syscall
-	ret
-
-strlen:
-	mov rdi, rax
-_sl0:
-	cmp byte [rax], 0
-	je _sl1
-	inc rax
-	jmp _sl0
-_sl1:
-	sub rax, rdi
-	ret
-
-strmov:
-_sm0:
-	mov sil, [rdi]
-	mov [rax], sil
-	cmp sil, 0
-	je _sm1
-	inc rax
-	inc rdi
-	jmp _sm0
-_sm1:
-	ret
 
 strcat:
-_sc0:
-	cmp byte [rax], 0
-	je _sc1
-	inc rax
-	jmp _sc0
-_sc1:
+	push rsi
+	call strend
+	mov rdi, rax
+	pop rsi
 	call strmov
 	ret
+
+
+strcmp:
+	jmp .c0
+
+.a0:
+	inc rdi
+	inc rsi
+
+.c0:
+	mov al, [rdi]
+	cmp al, [rsi]
+	jne .b0
+	cmp al, 0
+	jne .a0
+
+	mov rax, 1
+	ret
+
+.b0:
+	mov rax, 0
+	ret
+
+
+atoi:
+	xor rax, rax
+
+.a0:
+	mul rax, 10
+	movzx rsi, byte [rdi]
+	sub rsi, '0'
+	add rax, rsi
+	inc rdi
+
+	cmp byte [rdi], 0
+	jne .a0
+	ret
+
 
 reserve_block:
 	mov rax, SYS_BRK
@@ -96,45 +111,34 @@ reserve_block:
 	sub rax, BLOCK_SIZE
 	ret
 
+
 readlink:
-	; rax : file path
-
-	; -8  : file path
-
-	push rbp
-	mov rbp, rsp
-	sub rsp, 8
-
-	mov [rbp - 8], rax
-
+	push rdi
 	call reserve_block
+	pop rdi
 
 	mov rsi, rax
 	mov rax, SYS_RLINK
-	mov rdi, [rbp - 8]
 	mov rdx, BLOCK_SIZE
 	syscall
 
 	mov byte [rsi + rax], 0
 
 	mov rax, rsi
-
-	mov rsp, rbp
-	pop rbp
 	ret
 
+
 read_file:
-	; rax : file path
+	push rbp
+	mov rbp, rsp
+	sub rsp, 24
 
 	; -8  : file descriptor
 	; -16 : data ptr
 	; -24 : bytes read
 
-	push rbp
-	mov rbp, rsp
-	sub rsp, 24
+	mov qword [rbp - 24], 0
 
-	mov rdi, rax
 	mov rax, SYS_OPEN
 	mov rsi, O_RDONLY
 	xor rdx, rdx
@@ -145,9 +149,7 @@ read_file:
 	call reserve_block
 	mov [rbp - 16], rax
 
-	mov qword [rbp - 24], 0
-
-_rf0:
+.a0:
 	mov rsi, rax
 	mov rax, SYS_READ
 	mov rdi, [rbp - 8]
@@ -157,12 +159,12 @@ _rf0:
 	add [rbp - 24], rax
 
 	cmp rax, BLOCK_SIZE
-	jne _rf1
+	jne .b0
 
 	call reserve_block
-	jmp _rf0
+	jmp .a0
 
-_rf1:
+.b0:
 	mov rax, SYS_CLOSE
 	syscall
 
@@ -173,72 +175,209 @@ _rf1:
 	pop rbp
 	ret
 
-make_ptrptr:
 
+make_ptrptr:
 	push rbp
 	mov rbp, rsp
+	sub rsp, 48
 
-	; rax : out ptr
-	; rbx : out end
-	; rcx : in ptr
-	; rdx : in end
+	; - 8 : in ptr
+	; -16 : in len
+	; -24 : in off
+	; -32 : out ptr
+	; -40 : out len
+	; -48 : out off
 
-	mov rcx, rax
-	mov rdx, rdi
-	add rdx, rcx
+	mov [rbp - 8], rdi
+	mov [rbp - 16], rsi
+	mov qword [rbp - 24], 0
 
-	push rcx
 	call reserve_block
-	pop rcx
-	mov rbx, rax
-	add rbx, BLOCK_SIZE
-	push rax
+	mov [rbp - 32], rax
+	mov qword [rbp - 40], BLOCK_SIZE
+	mov qword [rbp - 48], 0
 
-_mpp0:
-	cmp rcx, rdx
-	jge _mpp3
+.a0:
+	mov rax, [rbp - 24]
+	cmp rax, [rbp - 16]
+	jge .b0
 
-	mov qword [rax], rcx
-	add rax, 8
+	add rax, [rbp - 8]
+	mov rbx, [rbp - 32]
+	mov rcx, [rbp - 48]
 
-	cmp rax, rbx
-	jne _mpp4
+	mov [rbx + rcx], rax
 
-	push rax
-	push rcx
+	add rcx, 8
+	mov [rbp - 48], rcx
+	cmp rcx, [rbp - 40]
+
+	jl .b1
+
 	call reserve_block
-	pop rcx
-	pop rax
 
-	add rbx, BLOCK_SIZE
+	add qword [rbp - 40], BLOCK_SIZE
 
-_mpp4:
+.b1:
+	mov rax, [rbp - 32]
+	mov rbx, [rbp - 48]
+	mov qword [rax + rbx], 0
 
-	mov qword [rax], 0
+	mov rax, [rbp - 8]
+	mov rbx, [rbp - 24]
+	jmp .c0
 
-_mpp1:
-	cmp byte [rcx], 0
-	je _mpp2
+.a1:
+	inc rbx
+.c0:
+	cmp byte [rax + rbx], 0
+	jne .a1
 
-	inc rcx
+	inc rbx
+	mov [rbp - 24], rbx
 
-	jmp _mpp1
-_mpp2:
+	jmp .a0
+.b0:
 
-	inc rcx
-	jmp _mpp0
-_mpp3:
+	mov rax, [rbp - 32]
 
-	pop rax
-	
 	mov rsp, rbp
 	pop rbp
 
 	ret
 
+
+pgrep:
+
+	; -  8 : pname
+	; - 16 : dir fd
+	; - 24 : dirent ptr
+	; - 32 : dirent end ptr
+	; - 64 : file buf
+	; -320 : dirent buf
+
+	push rbp
+	mov rbp, rsp
+	sub rsp, 320
+
+	mov [rbp - 8], rdi
+
+	mov rax, SYS_OPEN
+	mov rdi, procpath
+	mov rsi, O_RDONLY
+	mov rdx, 0
+	syscall
+
+	mov [rbp - 16], rax
+
+.a0:
+	mov rax, SYS_DENTS
+	mov rdi, [rbp - 16]
+	lea rsi, [rbp - 320]
+	mov rdx, 256
+	syscall
+
+	cmp rax, 0
+	jle .b1
+
+	mov [rbp - 24], rsi
+	add rsi, rax
+	mov [rbp - 32], rsi
+
+	jmp .c1
+.a1:
+	mov rdi, [rbp - 24]
+	add rdi, 18
+
+	mov al, byte [rdi]
+	cmp al, '0'
+	jl .b0
+	cmp al, '9'
+	jg .b0
+
+	lea rdi, [rbp - 64]
+	mov rsi, procpath
+	call strmov
+
+	lea rdi, [rbp - 64]
+	mov rsi, [rbp - 24]
+	add rsi, 18
+	call strcat
+
+	lea rdi, [rbp - 64]
+	mov rsi, scomm
+	call strcat
+
+	mov rax, SYS_OPEN
+	lea rdi, [rbp - 64]
+	mov rsi, O_RDONLY
+	mov rdx, 0
+	syscall
+
+	mov rdi, rax
+	mov rax, SYS_READ
+	lea rsi, [rbp - 64]
+	mov rdx, 32
+	syscall
+
+	mov byte [rbp + rax - 65], 0
+
+	mov rax, SYS_CLOSE
+	syscall
+
+	lea rdi, [rbp - 64]
+	mov rsi, [rbp - 8]
+	call strcmp
+
+	cmp rax, 0
+	je .b0
+
+	mov rax, SYS_CLOSE
+	mov rdi, [rbp - 16]
+	syscall
+
+	call reserve_block
+
+	push rax
+
+	mov rdi, rax
+	mov rsi, [rbp - 24]
+	add rsi, 18
+	call strmov
+
+	pop rax
+
+	mov rsp, rbp
+	pop rbp
+	ret
+
+.b0:
+	mov rdi, [rbp - 24]
+	movzx rax, word [rdi + 16]
+	add [rbp - 24], rax
+
+.c1:
+	mov rax, [rbp - 24]
+	cmp rax, [rbp - 32]
+	jl .a1
+	jmp .a0
+
+.b1:
+	mov rax, SYS_CLOSE
+	mov rdi, [rbp - 16]
+	syscall
+
+	mov rax, 0
+
+	mov rsp, rbp
+	pop rbp
+	ret
+
+
 global _start
 _start:
-	; + 8 : argv
+	; +16 : argv[1] (pname)
+	; + 8 : argv[0] (exe)
 	;   0 : argc
 	; - 8 : basepath
 	; -16 : append ptr
@@ -248,41 +387,53 @@ _start:
 	; -48 : cmdline
 	; -56 : environ
 	; -64 : pid but int
+	; -72 : pid but str
 
 	mov rbp, rsp
-	sub rsp, 64
+	sub rsp, 72
 
 	cmp [rbp], 2
-	jne err_args
+	jne .err_args
+
+	mov rdi, [rbp + 16]
+	call pgrep
+
+	cmp rax, 0
+	je .err_nsp
+
+	mov [rbp - 72], rax
 
 	; path stuff
 	; /proc/1234
 
-	mov rax, [rbp + 16]
+	mov rdi, [rbp - 72]
 	call atoi
 	mov [rbp - 64], rax
 
 	call reserve_block
 	mov [rbp - 8], rax
 
-	mov rdi, procpath
+	mov rdi, [rbp - 8]
+	mov rsi, [rbp - 72]
+	mov rsi, procpath
 	call strmov
-	mov rax, [rbp - 8]
-	mov rdi, [rbp + 16]
+	mov rdi, [rbp - 8]
+	mov rsi, [rbp - 72]
 	call strcat
 
 	; points to the end of the base path
-	mov rax, [rbp - 8]
+	mov rdi, [rbp - 8]
+	call strend
 	mov [rbp - 16], rax
-	call strlen
-	add [rbp - 16], rax
 
-	mov rax, [rbp - 8]
-	call stat_file
+	mov rax, SYS_STAT
+	mov rdi, [rbp - 8]
+	mov rsi, statbuf
+	syscall
 
 	; if stat returns negative, it probably doesn't exist
 	cmp rax, 0
-	jne err_nsp
+	jne .err_nsp
 
 	; save uid
 	mov eax, [st_uid]
@@ -293,56 +444,58 @@ _start:
 
 	; ensure we have permission
 	cmp rax, 0
-	je root_or_matching
-	
+	je .root_or_matching
+
 	cmp rax, [rbp - 24]
-	je root_or_matching
+	je .root_or_matching
 
-	jmp err_perm
+	jmp .err_perm
 
-root_or_matching:
+.root_or_matching:
 
 	; get cwd of process
-	mov rax, [rbp - 16]
-	mov rdi, scwd
+	mov rdi, [rbp - 16]
+	mov rsi, scwd
 	call strmov
 
-	mov rax, [rbp - 8]
+	mov rdi, [rbp - 8]
 	call readlink
-	
+
 	mov [rbp - 32], rax
 
 	; get exe of process
-	mov rax, [rbp - 16]
-	mov rdi, sexe
+	mov rdi, [rbp - 16]
+	mov rsi, sexe
 	call strmov
 
-	mov rax, [rbp - 8]
+	mov rdi, [rbp - 8]
 	call readlink
 
 	mov [rbp - 40], rax
 
 	; get cmdline of process
-	mov rax, [rbp - 16]
-	mov rdi, scmdline
+	mov rdi, [rbp - 16]
+	mov rsi, scmdline
 	call strmov
 
-	mov rax, [rbp - 8]
+	mov rdi, [rbp - 8]
 	call read_file
 
-	mov rdi, rdx
+	mov rdi, rax
+	mov rsi, rdx
 	call make_ptrptr
 	mov [rbp - 48], rax
 
 	; get environ of process
-	mov rax, [rbp - 16]
-	mov rdi, senviron
+	mov rdi, [rbp - 16]
+	mov rsi, senviron
 	call strmov
 
-	mov rax, [rbp - 8]
+	mov rdi, [rbp - 8]
 	call read_file
 
-	mov rdi, rdx
+	mov rdi, rax
+	mov rsi, rdx
 	call make_ptrptr
 	mov [rbp - 56], rax
 
@@ -353,7 +506,7 @@ root_or_matching:
 	syscall
 
 	; wait for it to die
-waiting:
+.waiting:
 	; check process
 	mov rax, SYS_KILL
 	mov rdi, [rbp - 64]
@@ -361,22 +514,22 @@ waiting:
 	syscall
 
 	cmp rax, 0
-	jne done_waiting
+	jne .done_waiting
 
 	; wait
 	mov rax, SYS_SLEEP
 	mov rdi, timespec
 	mov rsi, 0
 	syscall
-	jmp waiting
-done_waiting:
+	jmp .waiting
+.done_waiting:
 
 	; fork
 	mov rax, SYS_FORK
 	syscall
 
 	cmp rax, 0
-	jne exit0
+	jne .exit0
 
 	; setuid
 	mov rax, SYS_SUID
@@ -387,18 +540,19 @@ done_waiting:
 	mov rax, SYS_SSID
 	syscall
 
-	; close stdout
+	; close stdout/stderr
 	mov rax, SYS_CLOSE
 	mov rdi, 1
+	syscall
+
+	mov rax, SYS_CLOSE
+	mov rdi, 2
 	syscall
 
 	; chdir
 	mov rax, SYS_CHDIR
 	mov rdi, [rbp - 32]
 	syscall
-
-	cmp rax, 0
-	jne err_nsp
 
 	; execve
 	mov rax, SYS_EXECV
@@ -407,35 +561,35 @@ done_waiting:
 	mov rdx, [rbp - 56]
 	syscall
 
-exit0:
+.exit0:
 	mov rdi, 0
-exit:
+.exit:
 	mov rax, SYS_EXIT
 	syscall
 
-err_nsp:
+.err_nsp:
 	mov rax, SYS_WRITE
 	mov rdi, 1
 	mov rsi, err_msg_nsp
 	mov rdx, err_msg_nsp_len
 	syscall
-	jmp exit
+	jmp .exit
 
-err_args:
+.err_args:
 	mov rax, SYS_WRITE
 	mov rdi, 1
 	mov rsi, err_msg_args
 	mov rdx, err_msg_args_len
 	syscall
-	jmp exit
+	jmp .exit
 
-err_perm:
+.err_perm:
 	mov rax, SYS_WRITE
 	mov rdi, 1
 	mov rsi, err_msg_perm
 	mov rdx, err_msg_perm_len
 	syscall
-	jmp exit
+	jmp .exit
 
 section .data
 	procpath db "/proc/", 0
@@ -443,7 +597,8 @@ section .data
 	sexe db "/exe", 0
 	scmdline db "/cmdline", 0
 	senviron db "/environ", 0
-	
+	scomm db "/comm", 0
+
 	timespec:
 	tv_sec dq 0
 	tv_nsec dq 10000000
