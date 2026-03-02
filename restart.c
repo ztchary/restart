@@ -16,7 +16,7 @@ int main(int argc, char **argv) {
 	char *pname = argv[1];
 	char *pid = NULL;
 
-	char sprints[256];
+	char sprints[512];
 
 	DIR *dir = opendir("/proc");
 	char comm[256];
