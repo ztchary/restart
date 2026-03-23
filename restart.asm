@@ -22,6 +22,13 @@ SYS_RLINK equ 89
 SYS_GUID  equ 102
 SYS_SUID  equ 105
 SYS_SSID  equ 112
+
+STDIN_FD  equ 0
+STDOUT_FD equ 1
+STDERR_FD equ 2
+
+SIG_INT   equ 2
+
 section .text
 
 
@@ -502,7 +509,7 @@ _start:
 	; kill
 	mov rax, SYS_KILL
 	mov rdi, [rbp - 64]
-	mov rsi, 2
+	mov rsi, SIG_INT
 	syscall
 
 	; wait for it to die
@@ -542,11 +549,11 @@ _start:
 
 	; close stdout/stderr
 	mov rax, SYS_CLOSE
-	mov rdi, 1
+	mov rdi, STDOUT_FD
 	syscall
 
 	mov rax, SYS_CLOSE
-	mov rdi, 2
+	mov rdi, STDERR_FD
 	syscall
 
 	; chdir
@@ -569,7 +576,7 @@ _start:
 
 .err_nsp:
 	mov rax, SYS_WRITE
-	mov rdi, 1
+	mov rdi, STDERR_FD
 	mov rsi, err_msg_nsp
 	mov rdx, err_msg_nsp_len
 	syscall
@@ -577,7 +584,7 @@ _start:
 
 .err_args:
 	mov rax, SYS_WRITE
-	mov rdi, 1
+	mov rdi, STDERR_FD
 	mov rsi, err_msg_args
 	mov rdx, err_msg_args_len
 	syscall
@@ -585,7 +592,7 @@ _start:
 
 .err_perm:
 	mov rax, SYS_WRITE
-	mov rdi, 1
+	mov rdi, STDERR_FD
 	mov rsi, err_msg_perm
 	mov rdx, err_msg_perm_len
 	syscall
@@ -621,7 +628,7 @@ section .bss
     st_mode resb 4;
     st_uid resb 4;
     st_gid resb 4;
-    _pad0 resb 4;
+    st_pad0 resb 4;
     st_rdev resb 8;
     st_size resb 8;
     st_blksize resb 8;
@@ -633,5 +640,5 @@ section .bss
     st_mtime_nsec resb 8;
     st_ctime resb 8;
     st_ctime_nsec resb 8;
-    _unused resb 24;
+    st_unused resb 24;
 
